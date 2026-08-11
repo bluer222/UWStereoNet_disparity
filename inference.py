@@ -5,7 +5,7 @@ import png
 import tensorflow as tf
 from PIL import Image
 
-from image_reader import preprocess
+from image_reader import decode_image
 
 
 parser = argparse.ArgumentParser()
@@ -14,16 +14,15 @@ parser.add_argument("--output_dir", default='prediction/dropuwstereo_disp_citysc
 parser.add_argument("--left_dir", default='data/test/left/', help="path to folder containing left-view images")
 parser.add_argument("--right_dir", default='data/test/right/', help="path to folder containing right-view images")
 parser.add_argument("--gpu", type=str, default='0')
+parser.add_argument('--monochrome', dest='monochrome', action='store_true',
+                    help="load inputs as grayscale (must match the exported model)")
 
 a = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = a.gpu
 
 
-def load_image(path):
-    content = tf.io.read_file(path)
-    image = tf.image.decode_png(content, channels=3)
-    image = tf.image.convert_image_dtype(image, dtype=tf.float32)
-    image = preprocess(image)
+def load_image(path, monochrome=False):
+    image = decode_image(path, monochrome=monochrome)
     return tf.expand_dims(image, axis=0)
 
 
@@ -40,7 +39,7 @@ def main():
     model = tf.saved_model.load(a.export_dir)
     predict_fn = model.signatures['serving_default']
 
-    print('running...')
+    print('running... (monochrome={})'.format(a.monochrome))
     filenames = sorted(os.listdir(a.left_dir))
     for item in filenames:
         if not item.lower().endswith('.png'):
@@ -53,8 +52,8 @@ def main():
             print('skipping {} (shape {} not divisible by 32)'.format(item, shape))
             continue
 
-        left = load_image(l_path)
-        right = load_image(r_path)
+        left = load_image(l_path, monochrome=a.monochrome)
+        right = load_image(r_path, monochrome=a.monochrome)
         result = predict_fn(left=left, right=right)
         left_disp = np.squeeze(result['left_disp_pred'].numpy())
         right_disp = np.squeeze(result['right_disp_pred'].numpy())

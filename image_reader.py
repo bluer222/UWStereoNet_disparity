@@ -9,23 +9,26 @@ def preprocess(img):
     return img * 2 - 1
 
 
-def _decode_and_preprocess(path):
+def decode_image(path, monochrome=False):
+    """Load a PNG as float32 in [-1, 1]. Monochrome yields shape [H, W, 1]."""
     contents = tf.io.read_file(path)
-    image = tf.image.decode_png(contents, channels=3, dtype=tf.uint8)
+    channels = 1 if monochrome else 3
+    image = tf.image.decode_png(contents, channels=channels, dtype=tf.uint8)
     image = tf.image.convert_image_dtype(image, dtype=tf.float32)
     return preprocess(image)
 
 
-def _load_pair(left_path, right_path, height, width, dataset):
-    left = _decode_and_preprocess(left_path)
-    right = _decode_and_preprocess(right_path)
+def _load_pair(left_path, right_path, height, width, dataset, monochrome):
+    channels = 1 if monochrome else 3
+    left = decode_image(left_path, monochrome=monochrome)
+    right = decode_image(right_path, monochrome=monochrome)
     total = tf.concat([left, right], axis=-1)
     if dataset == 'cityscapes':
         total = tf.image.resize(total, [512, 1024])
-    cropped = tf.image.random_crop(total, [height, width, 6])
-    left, right = tf.split(cropped, [3, 3], axis=-1)
-    left.set_shape([height, width, 3])
-    right.set_shape([height, width, 3])
+    cropped = tf.image.random_crop(total, [height, width, channels * 2])
+    left, right = tf.split(cropped, [channels, channels], axis=-1)
+    left.set_shape([height, width, channels])
+    right.set_shape([height, width, channels])
     return left, right
 
 
@@ -41,7 +44,7 @@ def list_stereo_pairs(left_dir, right_dir):
 
 
 def create_dataset(left_dir, right_dir, height, width, dataset, batch_size,
-                   shuffle=True, repeat=True):
+                   shuffle=True, repeat=True, monochrome=False):
     left_paths, right_paths = list_stereo_pairs(left_dir, right_dir)
     ds = tf.data.Dataset.from_tensor_slices((left_paths, right_paths))
     if shuffle:
@@ -49,14 +52,14 @@ def create_dataset(left_dir, right_dir, height, width, dataset, batch_size,
     if repeat:
         ds = ds.repeat()
     ds = ds.map(
-        lambda l, r: _load_pair(l, r, height, width, dataset),
+        lambda l, r: _load_pair(l, r, height, width, dataset, monochrome),
         num_parallel_calls=tf.data.AUTOTUNE)
     ds = ds.batch(batch_size, drop_remainder=True)
     ds = ds.prefetch(tf.data.AUTOTUNE)
     return ds, len(left_paths)
 
 
-def load_examples(dirs, size, dataset, batch_size):
+def load_examples(dirs, size, dataset, batch_size, monochrome=False):
     """
     Compatibility wrapper around tf.data.
 
@@ -66,7 +69,7 @@ def load_examples(dirs, size, dataset, batch_size):
     Examples = collections.namedtuple('Examples', 'lefts, rights, count, batch_size, dataset')
     ds, count = create_dataset(
         dirs[0], dirs[1], size[0], size[1], dataset, batch_size,
-        shuffle=True, repeat=True)
+        shuffle=True, repeat=True, monochrome=monochrome)
     it = iter(ds)
     left, right = next(it)
     return Examples(lefts=left, rights=right, count=count, batch_size=batch_size, dataset=ds)

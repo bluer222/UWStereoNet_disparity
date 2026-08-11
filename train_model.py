@@ -39,6 +39,8 @@ parser.add_argument("--lr", type=float, default=0.0001, help="initial learning r
 parser.add_argument("--dataset", type=str, default='cityscapes', choices=["kitti", "cityscapes"])
 parser.add_argument("--gpu", type=str, default='0', help="which gpu to use")
 parser.add_argument('--is_val', dest='is_val', action='store_true', help="show validation loss")
+parser.add_argument('--monochrome', dest='monochrome', action='store_true',
+                    help="use single-channel grayscale inputs (RGB PNGs are converted)")
 
 a = parser.parse_args()
 
@@ -83,9 +85,13 @@ def eval_step(model, left, right, weights_list, w1, w2):
 def main():
     configure_gpu()
 
+    in_channels = 1 if a.monochrome else 3
+    if a.monochrome:
+        print('Monochrome mode: single-channel grayscale inputs')
+
     train_ds, count = create_dataset(
         a.left_dir, a.right_dir, a.height, a.width, a.dataset, a.batch_size,
-        shuffle=True, repeat=True)
+        shuffle=True, repeat=True, monochrome=a.monochrome)
     print('Num_data: {}'.format(count))
 
     val_ds = None
@@ -93,13 +99,13 @@ def main():
     if a.is_val:
         val_ds, val_count = create_dataset(
             a.left_val_dir, a.right_val_dir, a.height, a.width, a.dataset, a.batch_size,
-            shuffle=False, repeat=True)
+            shuffle=False, repeat=True, monochrome=a.monochrome)
         print('Num_val: {}'.format(val_count))
 
     model = StereoNet(max_num_disparity=a.max_num_disparity)
     # Build once so variables exist before checkpoint restore.
-    dummy_left = tf.zeros([a.batch_size, a.height, a.width, 3], dtype=tf.float32)
-    dummy_right = tf.zeros([a.batch_size, a.height, a.width, 3], dtype=tf.float32)
+    dummy_left = tf.zeros([a.batch_size, a.height, a.width, in_channels], dtype=tf.float32)
+    dummy_right = tf.zeros([a.batch_size, a.height, a.width, in_channels], dtype=tf.float32)
     _ = model([dummy_left, dummy_right], training=True)
 
     lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(

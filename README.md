@@ -45,6 +45,16 @@ python3 train_model.py \
 --is_val
 ```
 
+For grayscale / monochrome stereo (1-channel inputs; RGB PNGs are converted):
+
+```
+python3 train_model.py ... --monochrome
+python3 export_model.py ... --monochrome
+python3 inference.py ... --monochrome
+```
+
+Train, export, and inference must use the same `--monochrome` setting (RGB and mono checkpoints are not interchangeable).
+
 To visualize tensorboard:
 ```
 tensorboard --logdir summary/
