@@ -142,7 +142,10 @@ def main():
 
         if step % a.summary_freq == 0:
             with summary_writer.as_default():
-                tf.summary.scalar('learning_rate', optimizer.learning_rate(optimizer.iterations), step=step)
+                lr = optimizer.learning_rate
+                if callable(lr):
+                    lr = lr(optimizer.iterations)
+                tf.summary.scalar('learning_rate', lr, step=step)
                 tf.summary.scalar('step', step, step=step)
                 tf.summary.scalar('loss', loss, step=step)
                 tf.summary.scalar('loss_init', l_init, step=step)
