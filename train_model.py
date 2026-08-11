@@ -1,6 +1,7 @@
 import argparse
 import os
 import logging
+import time
 import tensorflow as tf
 
 from image_reader import create_dataset
@@ -55,6 +56,15 @@ for key in sorted(adict.keys()):
     logging.info('{0}:{1}'.format(key, adict[key]))
 
 WEIGHTS_LIST = [a.beta1, a.beta2, a.beta3, a.gamma1, a.gamma2, a.gamma3]
+
+
+def format_duration(seconds):
+    seconds = max(0, int(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours > 0:
+        return '{:d}:{:02d}:{:02d}'.format(hours, minutes, secs)
+    return '{:02d}:{:02d}'.format(minutes, secs)
 
 
 def configure_gpu():
@@ -132,6 +142,7 @@ def main():
     train_iter = iter(train_ds)
     val_iter = iter(val_ds) if val_ds is not None else None
 
+    t0 = time.perf_counter()
     for step in range(1, a.num_steps + 1):
         left, right = next(train_iter)
         loss, l_init, l_ref, outputs = train_step(
@@ -176,10 +187,18 @@ def main():
             print('-------- checkpoint saved:{} --------'.format(save_path))
 
         if step % a.print_summary_freq == 0 or step == 1:
-            print('epoch:{0}    step:{1}   loss:{2:.4f}'.format(train_epoch, step, loss_v))
+            elapsed = time.perf_counter() - t0
+            steps_per_sec = step / max(elapsed, 1e-8)
+            eta = (a.num_steps - step) / max(steps_per_sec, 1e-8)
+            print(
+                'epoch:{0}    step:{1}/{2}   loss:{3:.4f}   '
+                '{4:.2f} it/s   elapsed:{5}   eta:{6}'.format(
+                    train_epoch, step, a.num_steps, loss_v,
+                    steps_per_sec, format_duration(elapsed), format_duration(eta)))
 
     save_path = ckpt_manager.save(checkpoint_number=a.num_steps)
     print('-------- checkpoint saved:{} --------'.format(save_path))
+    print('Training finished in {}'.format(format_duration(time.perf_counter() - t0)))
 
 
 if __name__ == "__main__":
