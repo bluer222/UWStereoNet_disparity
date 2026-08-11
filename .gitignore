@@ -1,1 +1,6 @@
 /data
+/summary
+/prediction
+/export
+/__pycache__
+/checkpoint

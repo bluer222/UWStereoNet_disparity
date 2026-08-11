@@ -1,84 +1,72 @@
-import tensorflow as tf
+import os
 import glob
 import collections
-import os
-
-
-def load_examples(dirs, size, dataset, batch_size):
-    '''
-    directory: directory for disparity map
-    size: size of cropped image, [h, w]
-
-    return:
-        lefts: [bz, HEIGHT, WIDTH, 3]           # float32 [-1,1]
-        rights: [bz, HEIGHT, WIDTH, 3]          # float32 [-1,1]
-
-    note: default, batch_size is 1. If dataset==cityscapes, resize images to
-        512x1024 before cropping.
-
-    '''
-
-    HEIGHT = size[0]
-    WIDTH = size[1]
-    '''
-    Needs to be modified if input input directory is changed
-    '''
-    if dirs[1] is not None:
-        Examples = collections.namedtuple("Examples", "lefts, rights, count, batch_size")
-
-        input_left_dir = glob.glob(os.path.join(dirs[0], '*.png'))
-        input_right_dir = glob.glob(os.path.join(dirs[1], '*.png'))
-        input_left_dir.sort()
-        input_right_dir.sort()
-
-        with tf.name_scope("load_images"):
-            path_queue = tf.train.slice_input_producer([input_left_dir,
-                                                        input_right_dir], shuffle=True)
-            with tf.name_scope('read_left_image'):
-                contents = tf.read_file(path_queue[0])
-                left = tf.image.decode_png(contents, dtype=tf.uint8)
-                left = tf.image.convert_image_dtype(left, dtype=tf.float32)
-                # normalize image to [-1,1]
-                left = preprocess(left)
-
-            with tf.name_scope('read_right_image'):
-                contents = tf.read_file(path_queue[1])
-                right = tf.image.decode_png(contents, dtype=tf.uint8)
-                right = tf.image.convert_image_dtype(right, dtype=tf.float32)
-                right = preprocess(right)
-
-            with tf.name_scope('random_crop_images'):
-                total = tf.concat([left, right], axis=-1)
-                if dataset == 'cityscapes':
-                    total = tf.image.resize_images(total, [512, 1024])
-                cropped_total = tf.random_crop(total, [HEIGHT, WIDTH, 6])
-                left, right = tf.split(cropped_total, [3, 3], axis=-1)
-            left_batch, right_batch = tf.train.batch([left, right], batch_size=batch_size)
-
-        return Examples(
-                    lefts=left_batch,
-                    rights=right_batch,
-                    count=len(input_left_dir),
-                    batch_size=batch_size)
+import tensorflow as tf
 
 
 def preprocess(img):
-    '''
-    normalize image with float32 [0,1] to [-1,1]
-    '''
-    img = img * 2 - 1
-    return img
+    """Normalize float32 image in [0, 1] to [-1, 1]."""
+    return img * 2 - 1
 
 
-if __name__ == "__main__":
+def _decode_and_preprocess(path):
+    contents = tf.io.read_file(path)
+    image = tf.image.decode_png(contents, channels=3, dtype=tf.uint8)
+    image = tf.image.convert_image_dtype(image, dtype=tf.float32)
+    return preprocess(image)
 
-    example = load_examples()
-    lefts = example.lefts
-    c = example.count
 
-    init = tf.global_variables_initializer()
+def _load_pair(left_path, right_path, height, width, dataset):
+    left = _decode_and_preprocess(left_path)
+    right = _decode_and_preprocess(right_path)
+    total = tf.concat([left, right], axis=-1)
+    if dataset == 'cityscapes':
+        total = tf.image.resize(total, [512, 1024])
+    cropped = tf.image.random_crop(total, [height, width, 6])
+    left, right = tf.split(cropped, [3, 3], axis=-1)
+    left.set_shape([height, width, 3])
+    right.set_shape([height, width, 3])
+    return left, right
 
-    with tf.Session() as sess:
-        sess.run(init)
-        s = sess.run(lefts)
-        print(s.shape)
+
+def list_stereo_pairs(left_dir, right_dir):
+    left_paths = sorted(glob.glob(os.path.join(left_dir, '*.png')))
+    right_paths = sorted(glob.glob(os.path.join(right_dir, '*.png')))
+    if len(left_paths) == 0:
+        raise FileNotFoundError(f'No PNGs found in {left_dir}')
+    if len(left_paths) != len(right_paths):
+        raise ValueError(
+            f'Mismatched stereo counts: {len(left_paths)} left vs {len(right_paths)} right')
+    return left_paths, right_paths
+
+
+def create_dataset(left_dir, right_dir, height, width, dataset, batch_size,
+                   shuffle=True, repeat=True):
+    left_paths, right_paths = list_stereo_pairs(left_dir, right_dir)
+    ds = tf.data.Dataset.from_tensor_slices((left_paths, right_paths))
+    if shuffle:
+        ds = ds.shuffle(buffer_size=min(len(left_paths), 1024), reshuffle_each_iteration=True)
+    if repeat:
+        ds = ds.repeat()
+    ds = ds.map(
+        lambda l, r: _load_pair(l, r, height, width, dataset),
+        num_parallel_calls=tf.data.AUTOTUNE)
+    ds = ds.batch(batch_size, drop_remainder=True)
+    ds = ds.prefetch(tf.data.AUTOTUNE)
+    return ds, len(left_paths)
+
+
+def load_examples(dirs, size, dataset, batch_size):
+    """
+    Compatibility wrapper around tf.data.
+
+    Returns a namedtuple with a dataset iterator tensors for a single next batch,
+    plus count/batch_size metadata. Prefer create_dataset() for new code.
+    """
+    Examples = collections.namedtuple('Examples', 'lefts, rights, count, batch_size, dataset')
+    ds, count = create_dataset(
+        dirs[0], dirs[1], size[0], size[1], dataset, batch_size,
+        shuffle=True, repeat=True)
+    it = iter(ds)
+    left, right = next(it)
+    return Examples(lefts=left, rights=right, count=count, batch_size=batch_size, dataset=ds)

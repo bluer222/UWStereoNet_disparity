@@ -1,6 +1,12 @@
 # UWStereoNet - Disparity Estimation Module
 ![](figures/uwstereo_disparity_arch.png)
-+ This repository contains source code for the Disparity Estimation Module for UWStereoNet developed in UWStereoNet: Unsupervised Learning for Depth Estimation and Color Correction of Underwater Stereo Imagery. During training, the model takes stereo images pairs as inputs and output both left and right disparity maps. The code is tested in TensorFlow 1.11.
++ This repository contains source code for the Disparity Estimation Module for UWStereoNet developed in UWStereoNet: Unsupervised Learning for Depth Estimation and Color Correction of Underwater Stereo Imagery. During training, the model takes stereo images pairs as inputs and output both left and right disparity maps.
+
+The code has been ported to **TensorFlow 2.x** (tested with 2.21 + CUDA 12 on an NVIDIA L40S). Install dependencies with:
+
+```
+pip install -r requirements.txt
+```
 
 # UWStereoNet - Color Correction Module
 
@@ -35,7 +41,7 @@ python3 train_model.py \
 --left_val_dir data/cityscapes/val/left/ \
 --right_val_dir data/cityscapes/val/right/ \
 --dataset cityscapes \
---gpu 1 \
+--gpu 0 \
 --is_val
 ```
 
@@ -44,24 +50,23 @@ To visualize tensorboard:
 tensorboard --logdir summary/
 ```
 
-To export model:
+To export a SavedModel from a training checkpoint:
 ```
 python3 export_model.py \
 --checkpoint_dir checkpoint/dropuwstereo_disp_cityscapes/ \
 --export_dir export/dropuwstereo_disp_cityscapes/ \
---gpu 1
+--gpu 0
 ```
 
-To do inference:
+To run inference (input spatial size must be divisible by 32):
 ```
 python3 inference.py \
 --export_dir export/dropuwstereo_disp_cityscapes/ \
 --output_dir prediction_result/dropuwstereo_disp_cityscapes/ \
 --left_dir data/test/left/ \
 --right_dir data/test/right/ \
---gpu 1
+--gpu 0
 ```
-Note: make sure the shape of input inference image is dividable by 32
 
 
 # Citations

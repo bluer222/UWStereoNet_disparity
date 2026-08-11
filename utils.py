@@ -2,121 +2,103 @@ import tensorflow as tf
 
 
 def deprocess(img):
-    '''
-    denormalize image from [-1,1] tp [0,1], and then to uint8
-    '''
+    """Denormalize image from [-1, 1] to uint8 [0, 255]."""
     img = (img + 1) / 2
-    img = tf.image.convert_image_dtype(img, dtype=tf.uint8, saturate=True)
-    return img
+    return tf.image.convert_image_dtype(img, dtype=tf.uint8, saturate=True)
 
 
-def lrelu(x, a=0.2, name="lrelu"):
-    with tf.name_scope(name):
-        # this block looks like it has 2 inputs on the graph unless we do this
-        x = tf.identity(x)
-        return (0.5 * (1 + a)) * x + (0.5 * (1 - a)) * tf.abs(x)
+def lrelu(x, a=0.2):
+    return (0.5 * (1 + a)) * x + (0.5 * (1 - a)) * tf.abs(x)
 
 
-def conv3d_norm_lrelu(inputs, filters, kernel_size=3, strides=(1, 1, 1), is_train=True, withLrelu=True, padding='same', name='conv_norm_lrelu'):
-    """
-    Containing convolution, batch_norm and leaky_relu.
-    """
-    with tf.variable_scope(name):
-        conv = tf.layers.conv3d(inputs, filters, kernel_size=kernel_size, strides=strides, padding=padding, use_bias=False, name='conv3d')
-        output = tf.layers.batch_normalization(conv, training=is_train, name='batch_norm')
-        if withLrelu:
-            output = lrelu(output, name='lrelu')
-    return output
+class ConvNormLReLU(tf.keras.layers.Layer):
+    def __init__(self, filters, kernel_size=3, strides=(1, 1), with_lrelu=True, **kwargs):
+        super().__init__(**kwargs)
+        self.with_lrelu = with_lrelu
+        self.conv = tf.keras.layers.Conv2D(
+            filters, kernel_size=kernel_size, strides=strides,
+            padding='same', use_bias=False, name='conv')
+        self.bn = tf.keras.layers.BatchNormalization(name='batch_norm')
+
+    def call(self, inputs, training=None):
+        x = self.conv(inputs)
+        x = self.bn(x, training=training)
+        if self.with_lrelu:
+            x = lrelu(x)
+        return x
 
 
-def deconv3d_norm_lrelu(inputs, filters, kernel_size=3, strides=(2, 2, 2), is_train=True, name='deconv_norm_lrelu'):
-    """
-    Containing convolution, batch_norm and leaky_relu.
-    """
-    with tf.variable_scope(name):
-        conv = tf.layers.conv3d_transpose(inputs, filters, kernel_size=kernel_size, strides=strides, padding='same', use_bias=False, name='deconv3d')
-        normalized = tf.layers.batch_normalization(conv, training=is_train, name='batch_norm')
-        output = lrelu(normalized, name='lrelu')
-    return output
+class DeconvNormLReLU(tf.keras.layers.Layer):
+    def __init__(self, filters, kernel_size=3, strides=(2, 2), **kwargs):
+        super().__init__(**kwargs)
+        self.conv = tf.keras.layers.Conv2DTranspose(
+            filters, kernel_size=kernel_size, strides=strides,
+            padding='same', use_bias=False, name='deconv')
+        self.bn = tf.keras.layers.BatchNormalization(name='batch_norm')
+
+    def call(self, inputs, training=None):
+        x = self.conv(inputs)
+        x = self.bn(x, training=training)
+        return lrelu(x)
 
 
-def conv_norm_lrelu(inputs, filters, kernel_size=3, strides=(1, 1), is_train=True, withLrelu=True, name='conv_norm_lrelu'):
-    """
-    Containing convolution, batch_norm and leaky_relu.
-    kernel_size: 3
-    strides: (1,1)
-    """
-    with tf.variable_scope(name):
-        conv = tf.layers.conv2d(inputs, filters, kernel_size=kernel_size, strides=strides, padding='same', use_bias=False, name='conv')
-        output = tf.layers.batch_normalization(conv, training=is_train, name='batch_norm')
-        if withLrelu:
-            output = lrelu(output, name='lrelu')
-    return output
+class Conv3DNormLReLU(tf.keras.layers.Layer):
+    def __init__(self, filters, kernel_size=3, strides=(1, 1, 1),
+                 with_lrelu=True, padding='same', **kwargs):
+        super().__init__(**kwargs)
+        self.with_lrelu = with_lrelu
+        self.conv = tf.keras.layers.Conv3D(
+            filters, kernel_size=kernel_size, strides=strides,
+            padding=padding, use_bias=False, name='conv3d')
+        self.bn = tf.keras.layers.BatchNormalization(name='batch_norm')
+
+    def call(self, inputs, training=None):
+        x = self.conv(inputs)
+        x = self.bn(x, training=training)
+        if self.with_lrelu:
+            x = lrelu(x)
+        return x
 
 
-def deconv_norm_lrelu(inputs, filters, kernel_size, strides, is_train, name='conv_norm_lrelu'):
-    """
-    Containing deconvolution, batch_norm and leaky_relu.
-    """
-    with tf.variable_scope(name):
-        conv = tf.layers.conv2d_transpose(inputs, filters, kernel_size=kernel_size, strides=strides, padding='same', use_bias=False, name='deconv')
-        normalized = tf.layers.batch_normalization(conv, training=is_train, name='batch_norm')
-        output = lrelu(normalized, name='lrelu')
-    return output
+class Deconv3DNormLReLU(tf.keras.layers.Layer):
+    def __init__(self, filters, kernel_size=3, strides=(2, 2, 2), **kwargs):
+        super().__init__(**kwargs)
+        self.conv = tf.keras.layers.Conv3DTranspose(
+            filters, kernel_size=kernel_size, strides=strides,
+            padding='same', use_bias=False, name='deconv3d')
+        self.bn = tf.keras.layers.BatchNormalization(name='batch_norm')
+
+    def call(self, inputs, training=None):
+        x = self.conv(inputs)
+        x = self.bn(x, training=training)
+        return lrelu(x)
 
 
-def norm_lrelu_conv(inputs, filters, kernel_size, strides, is_train, name='norm_lrelu_conv'):
-    """
-    Containing convolution, batch_norm and leaky_relu.
-    """
-    with tf.variable_scope(name):
-        normalized = tf.layers.batch_normalization(inputs, training=is_train, name='batch_norm')
-        lre = lrelu(normalized, name='lrelu')
-        conv = tf.layers.conv2d(lre, filters, kernel_size=kernel_size, strides=strides, padding='same', use_bias=False, name='conv')
-    return conv
+class IdentityBlock(tf.keras.layers.Layer):
+    def __init__(self, filters, **kwargs):
+        super().__init__(**kwargs)
+        self.conv1 = ConvNormLReLU(filters[0], strides=(1, 1), name='conv1')
+        self.conv2 = ConvNormLReLU(filters[1], strides=(1, 1), name='conv2')
+        self.conv3 = ConvNormLReLU(filters[2], strides=(1, 1), with_lrelu=False, name='conv3')
+
+    def call(self, inputs, training=None):
+        x = self.conv1(inputs, training=training)
+        x = self.conv2(x, training=training)
+        x = self.conv3(x, training=training)
+        return lrelu(inputs + x)
 
 
-def identityBlock(inputs, filters, is_train, name='identityBlock'):
-    with tf.variable_scope(name):
-        inputs = tf.identity(inputs, name='inputs')
-        conv1 = conv_norm_lrelu(inputs, filters[0], strides=(1, 1), is_train=is_train, name="conv1")
-        conv2 = conv_norm_lrelu(conv1, filters[1], strides=(1, 1), is_train=is_train, name="conv2")
-        conv3 = conv_norm_lrelu(conv2, filters[2], strides=(1, 1), is_train=is_train, withLrelu=False, name="conv3")
-        output = tf.add(inputs, conv3)
-        output = lrelu(output)
-    return output
+class ConvBlock(tf.keras.layers.Layer):
+    def __init__(self, filters, strides, **kwargs):
+        super().__init__(**kwargs)
+        self.conv1 = ConvNormLReLU(filters[0], strides=strides, name='conv1')
+        self.conv2 = ConvNormLReLU(filters[1], strides=(1, 1), name='conv2')
+        self.conv3 = ConvNormLReLU(filters[2], strides=(1, 1), with_lrelu=False, name='conv3')
+        self.shortcut = ConvNormLReLU(filters[2], strides=strides, with_lrelu=False, name='shortcut')
 
-
-def convBlock(inputs, filters, strides, is_train, name='convBlock'):
-    with tf.variable_scope(name):
-        inputs = tf.identity(inputs, name='inputs')
-        conv1 = conv_norm_lrelu(inputs, filters[0], strides=strides, is_train=is_train, name="conv1")
-        conv2 = conv_norm_lrelu(conv1, filters[1], strides=(1, 1), is_train=is_train, name="conv2")
-        conv3 = conv_norm_lrelu(conv2, filters[2], strides=(1, 1), is_train=is_train, withLrelu=False, name="conv3")
-        shortcut = conv_norm_lrelu(inputs, filters[2], strides=strides, is_train=is_train, withLrelu=False, name="shortcut")
-        output = tf.add(shortcut, conv3)
-        output = lrelu(output)
-    return output
-
-
-def identityBlock3D(inputs, filters, is_train, name='identityBlock'):
-    with tf.variable_scope(name):
-        inputs = tf.identity(inputs, name='inputs')
-        conv1 = conv3d_norm_lrelu(inputs, filters[0], strides=(1, 1, 1), is_train=is_train, name="conv1")
-        conv2 = conv3d_norm_lrelu(conv1, filters[1], strides=(1, 1, 1), is_train=is_train, name="conv2")
-        conv3 = conv3d_norm_lrelu(conv2, filters[2], strides=(1, 1, 1), is_train=is_train, withLrelu=False, name="conv3")
-        output = tf.add(inputs, conv3)
-        output = lrelu(output)
-    return output
-
-
-def convBlock3D(inputs, filters, strides, is_train, name='convBlock'):
-    with tf.variable_scope(name):
-        inputs = tf.identity(inputs, name='inputs')
-        conv1 = conv3d_norm_lrelu(inputs, filters[0], strides=strides, is_train=is_train, name="conv1")
-        conv2 = conv3d_norm_lrelu(conv1, filters[1], strides=(1, 1, 1), is_train=is_train, name="conv2")
-        conv3 = conv3d_norm_lrelu(conv2, filters[2], strides=(1, 1, 1), is_train=is_train, withLrelu=False, name="conv3")
-        shortcut = conv3d_norm_lrelu(inputs, filters[2], strides=strides, is_train=is_train, withLrelu=False, name="shortcut")
-        output = tf.add(shortcut, conv3)
-        output = lrelu(output)
-    return output
+    def call(self, inputs, training=None):
+        x = self.conv1(inputs, training=training)
+        x = self.conv2(x, training=training)
+        x = self.conv3(x, training=training)
+        shortcut = self.shortcut(inputs, training=training)
+        return lrelu(shortcut + x)

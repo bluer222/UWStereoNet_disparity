@@ -1,11 +1,12 @@
 import argparse
 import os
-import tensorflow as tf
 import logging
-from res_bone import Res_bone
-from image_reader import load_examples
+import tensorflow as tf
+
+from image_reader import create_dataset
+from model import StereoNet
 from utils import deprocess
-from model import create_costVolume, modual3D, predict, compute_loss, refinement
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--left_dir", default='data/cityscapes/train/left/', help="path to folder containing left-view training images")
@@ -41,206 +42,135 @@ parser.add_argument('--is_val', dest='is_val', action='store_true', help="show v
 
 a = parser.parse_args()
 
-if not os.path.exists(a.summary_dir):
-    os.makedirs(a.summary_dir)
-if not os.path.exists(a.checkpoint_dir):
-    os.makedirs(a.checkpoint_dir)
-
-# save logging parameters
-logging.basicConfig(filename=a.summary_dir+'parameters.log', level=logging.DEBUG)
-adict = vars(parser.parse_args())
-keys = list(adict.keys())
-keys.sort()
-for item in keys:
-    logging.info('{0}:{1}'.format(item, adict[item]))
-
-
-TARGET_SHAPE = [a.height, a.width, a.max_num_disparity+1]
-WEIGHTS_LIST = [a.beta1, a.beta2, a.beta3, a.gamma1, a.gamma2, a.gamma3]
 os.environ['CUDA_VISIBLE_DEVICES'] = a.gpu
 
+os.makedirs(a.summary_dir, exist_ok=True)
+os.makedirs(a.checkpoint_dir, exist_ok=True)
 
-def load_data(dirs, size, name='load_data'):save_
-    '''
-    load left image, right image and disparity map
-    '''
-    with tf.variable_scope(name):
-        examples = load_examples(dirs, size, a.dataset, a.batch_size)
-        left = examples.lefts
-        right = examples.rights
+logging.basicConfig(filename=os.path.join(a.summary_dir, 'parameters.log'), level=logging.DEBUG)
+adict = vars(a)
+for key in sorted(adict.keys()):
+    logging.info('{0}:{1}'.format(key, adict[key]))
 
-        return left, right, examples.count, examples.batch_size
+WEIGHTS_LIST = [a.beta1, a.beta2, a.beta3, a.gamma1, a.gamma2, a.gamma3]
 
 
-def build_model(input, is_train=True, reuse=False):
-    with tf.variable_scope('model'):
-        left_res = Res_bone(input[0], is_train=is_train, reuse=reuse)
-        right_res = Res_bone(input[1], is_train=is_train, reuse=True)
-        left_cost_volume, right_cost_volume = create_costVolume(left_res.disp_feature, right_res.disp_feature, a.max_num_disparity)
-        with tf.variable_scope('Initial'):
-            # initial disparity estimation
-            left_initial_disp_logits = modual3D(left_cost_volume, is_train=is_train, reuse=reuse)
-            right_initial_disp_logits = modual3D(right_cost_volume, is_train=is_train, reuse=True)
-            # disparity estimation, same size of original stereo images
-            left_initial_disp = predict(left_initial_disp_logits, TARGET_SHAPE, name='left_disp')
-            right_initial_disp = predict(right_initial_disp_logits, TARGET_SHAPE, name='right_disp')
-            L1 = compute_loss(
-                input[0], input[1],
-                left_initial_disp,
-                right_initial_disp,
-                left_res.seg_embedding,
-                right_res.seg_embedding,
-                WEIGHTS_LIST,
-                name='Initial_loss'
-            )
+def configure_gpu():
+    gpus = tf.config.list_physical_devices('GPU')
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
 
-        with tf.variable_scope('Refined'):
-            # refinement
-            left_refined_disp_logits = refinement(left_initial_disp_logits, left_res.seg_embedding, is_train=is_train, reuse=reuse)
-            right_refined_disp_logits = refinement(right_initial_disp_logits, right_res.seg_embedding, is_train=is_train, reuse=True)
-            # disparity estimation, same size of original stereo images
-            left_refined_disp = predict(left_refined_disp_logits, TARGET_SHAPE, name='left_disp')
-            right_refined_disp = predict(right_refined_disp_logits, TARGET_SHAPE, name='right_disp')
-            L2 = compute_loss(
-                input[0], input[1],
-                left_refined_disp,
-                right_refined_disp,
-                left_res.seg_embedding,
-                right_res.seg_embedding,
-                WEIGHTS_LIST,
-                name='Refined_loss'
-            )
-        loss = a.w1*L1 + a.w2*L2
 
-    return loss, L1, L2, left_initial_disp, right_initial_disp, left_refined_disp, right_refined_disp
+@tf.function
+def train_step(model, optimizer, left, right, weights_list, w1, w2):
+    with tf.GradientTape() as tape:
+        outputs = model([left, right], training=True)
+        loss, l_init, l_ref = model.compute_total_loss(
+            left, right, outputs, weights_list, w1=w1, w2=w2)
+    gradients = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+    return loss, l_init, l_ref, outputs
+
+
+@tf.function
+def eval_step(model, left, right, weights_list, w1, w2):
+    outputs = model([left, right], training=False)
+    loss, l_init, l_ref = model.compute_total_loss(
+        left, right, outputs, weights_list, w1=w1, w2=w2)
+    return loss, l_init, l_ref
 
 
 def main():
-    """Create the model and start the training."""
+    configure_gpu()
 
-    '''
-    1. create image reader
-    '''
+    train_ds, count = create_dataset(
+        a.left_dir, a.right_dir, a.height, a.width, a.dataset, a.batch_size,
+        shuffle=True, repeat=True)
+    print('Num_data: {}'.format(count))
 
-    with tf.device('/cpu:0'):
+    val_ds = None
+    val_count = 0
+    if a.is_val:
+        val_ds, val_count = create_dataset(
+            a.left_val_dir, a.right_val_dir, a.height, a.width, a.dataset, a.batch_size,
+            shuffle=False, repeat=True)
+        print('Num_val: {}'.format(val_count))
 
-        left, right, count, batch_size = load_data([a.left_dir, a.right_dir], [a.height, a.width], name='load_data')
-        if a.is_val:
-            left_val, right_val, val_count, val_batch_size = load_data([a.left_val_dir, a.right_val_dir], [a.height, a.width], name='load_val_data')
+    model = StereoNet(max_num_disparity=a.max_num_disparity)
+    # Build once so variables exist before checkpoint restore.
+    dummy_left = tf.zeros([a.batch_size, a.height, a.width, 3], dtype=tf.float32)
+    dummy_right = tf.zeros([a.batch_size, a.height, a.width, 3], dtype=tf.float32)
+    _ = model([dummy_left, dummy_right], training=True)
 
-        print('Num_data: {}'.format(count))
-        if a.is_val:
-            print('Num_val: {}'.format(val_count))
+    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+        initial_learning_rate=a.lr,
+        decay_steps=a.schedule_freq,
+        decay_rate=0.5,
+        staircase=True)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
 
-        '''
-        2. build model, the prediction
-        '''
+    ckpt = tf.train.Checkpoint(model=model, optimizer=optimizer)
+    ckpt_manager = tf.train.CheckpointManager(ckpt, a.checkpoint_dir, max_to_keep=8)
 
-        with tf.device('/gpu:0'):
-            with tf.name_scope('build_graph'):
+    if a.resume_dir is not None:
+        latest = tf.train.latest_checkpoint(a.resume_dir)
+        if latest is not None:
+            ckpt.restore(latest).expect_partial()
+            # Match original behavior: reset step counter after resume.
+            optimizer.iterations.assign(0)
+            print('Reload from: {}'.format(a.resume_dir))
+        else:
+            print('No checkpoint found in resume_dir; training from scratch')
 
-                loss, l_init, l_ref, left_initial_disp, right_initial_disp, left_refined_disp, right_refined_disp = build_model([left, right], is_train=True, reuse=False)
-                if a.is_val:
-                    val_loss, _, _, _, _, _, _ = build_model([left_val, right_val], is_train=False, reuse=True)
+    summary_writer = tf.summary.create_file_writer(a.summary_dir)
+    train_iter = iter(train_ds)
+    val_iter = iter(val_ds) if val_ds is not None else None
 
-            '''
-            3. do updating
-            '''
-            with tf.name_scope('train'):
-                global_step = tf.Variable(0, trainable=False, name='global_step')
-                # lr = tf.train.exponential_decay(LEARNING_RATE, global_step, 10, 0.96, staircase=True, name='learning_rate')
-                rate = tf.pow(0.5, tf.cast(tf.cast(global_step/a.schedule_freq, tf.int32), tf.float32))
-                lr = a.lr * rate
-                tf.summary.scalar('learning_rate', lr, collections=['train_summary'])
-                tf.summary.scalar('step', global_step, collections=['train_summary'])
-                update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-                with tf.control_dependencies(update_ops):
-                    optimizer = tf.train.AdamOptimizer(lr)
-                    optimize = optimizer.minimize(loss, global_step)
+    for step in range(1, a.num_steps + 1):
+        left, right = next(train_iter)
+        loss, l_init, l_ref, outputs = train_step(
+            model, optimizer, left, right, WEIGHTS_LIST, a.w1, a.w2)
 
-            with tf.name_scope('loss'):
-                tf.summary.scalar('loss', loss, collections=['train_summary'])
-                tf.summary.scalar('loss_init', l_init, collections=['train_summary'])
-                tf.summary.scalar('loss_ref', l_ref, collections=['train_summary'])
-                loss_val = tf.placeholder(tf.float32, [])
-                loss_val_sum = tf.summary.scalar('loss_val', loss_val)
-            with tf.name_scope('input_images'):
-                tf.summary.image("left", deprocess(left), max_outputs=1, collections=['train_summary'])
-                tf.summary.image("right", deprocess(right), max_outputs=1, collections=['train_summary'])
-            with tf.name_scope('disp_images'):
-                tf.summary.image("left_disp_refined", left_refined_disp, max_outputs=1, collections=['train_summary'])
-                tf.summary.image("right_disp_refined", right_refined_disp, max_outputs=1, collections=['train_summary'])
-                tf.summary.image("left_disp_init", left_initial_disp, max_outputs=1, collections=['train_summary'])
-                tf.summary.image("right_disp_init", right_initial_disp, max_outputs=1, collections=['train_summary'])
+        train_epoch = step * a.batch_size // count
+        loss_v = float(loss)
 
-        '''
-        3. training setting
-        '''
-        with tf.name_scope('save'):
-            saver = tf.train.Saver(max_to_keep=8)
-            summary_writer = tf.summary.FileWriter(a.summary_dir)
-            # summary_op = tf.summary.merge([loss_sum,left_sum,right_sum,left_disp_sum,right_disp_sum, step_sum, lr_sum])
-            summary_op = tf.summary.merge_all(key='train_summary')
-            init = tf.global_variables_initializer()
+        if step % a.summary_freq == 0:
+            with summary_writer.as_default():
+                tf.summary.scalar('learning_rate', optimizer.learning_rate(optimizer.iterations), step=step)
+                tf.summary.scalar('step', step, step=step)
+                tf.summary.scalar('loss', loss, step=step)
+                tf.summary.scalar('loss_init', l_init, step=step)
+                tf.summary.scalar('loss_ref', l_ref, step=step)
+                tf.summary.image('left', deprocess(left), step=step, max_outputs=1)
+                tf.summary.image('right', deprocess(right), step=step, max_outputs=1)
+                tf.summary.image('left_disp_refined', outputs['left_refined_disp'], step=step, max_outputs=1)
+                tf.summary.image('right_disp_refined', outputs['right_refined_disp'], step=step, max_outputs=1)
+                tf.summary.image('left_disp_init', outputs['left_initial_disp'], step=step, max_outputs=1)
+                tf.summary.image('right_disp_init', outputs['right_initial_disp'], step=step, max_outputs=1)
+            print('-------- summary saved --------')
 
-        '''
-        4. begin to train
-        '''
-        config = tf.ConfigProto(allow_soft_placement=True)
-        with tf.Session(config=config) as sess:
-            if a.resume_dir is not None:
-                # restoring from the checkpoint file
-                ckpt = tf.train.get_checkpoint_state(a.resume_dir)
-                if ckpt is not None:
-                    tf.train.Saver().restore(sess, ckpt.model_checkpoint_path)
-                    sess.run(global_step.assign(0))     # reset global_step to zero
-                    print('Reload from: {}'.format(a.resume_dir))
-                else:
-                    sess.run(init)
-            else:
-                sess.run(init)
-                # sess.run(load_pretrained_parameters)
+        if a.is_val and step % count == 0:
+            print('Running Validation')
+            total_vl = 0.0
+            for _ in range(val_count):
+                vleft, vright = next(val_iter)
+                vl, _, _ = eval_step(
+                    model, vleft, vright, WEIGHTS_LIST, a.w1, a.w2)
+                total_vl += float(vl)
+            vl_avg = total_vl / max(val_count, 1)
+            with summary_writer.as_default():
+                tf.summary.scalar('loss_val', vl_avg, step=step)
+            print('-------- training_loss:{0:.4f}    validation_loss:{1:.4f}'.format(loss_v, vl_avg))
 
-            summary_writer.add_graph(sess.graph)
+        if step % a.save_freq == 0:
+            save_path = ckpt_manager.save(checkpoint_number=step)
+            print('-------- checkpoint saved:{} --------'.format(save_path))
 
-            tf.train.start_queue_runners(sess=sess)
+        if step % a.print_summary_freq == 0 or step == 1:
+            print('epoch:{0}    step:{1}   loss:{2:.4f}'.format(train_epoch, step, loss_v))
 
-            for step in range(a.num_steps):
-
-                _, l, step = sess.run([optimize, loss, global_step])
-                train_epoch = step * a.batch_size // count
-
-                if step % a.summary_freq == 0:
-                    s = sess.run(summary_op)
-                    summary_writer.add_summary(s, step)
-                    summary_writer.flush()
-                    print('-------- summary saved --------')
-
-                if a.is_val:
-                    if step % count == 0:
-                        print('Running Validation')
-                        # iterate through validation set
-                        total_vl = 0
-                        for i in range(0, val_count):
-                            vl = sess.run(val_loss)
-                            total_vl = total_vl + vl
-                        vl_avg = 1.0*total_vl/val_count
-
-                        s = sess.run(loss_val_sum, {loss_val: vl_avg})
-                        summary_writer.add_summary(s, step)
-                        summary_writer.flush()
-                        print('-------- training_loss:{0:.4f}    validation_loss:{1:.4f}'.format(l, vl_avg))
-
-                if step % a.save_freq == 0 and step != 0:
-                    saver.save(sess, a.checkpoint_dir + 'model.ckpt', global_step=step)
-                    print('-------- checkpoint saved:{} --------'.format(step))
-
-                if step % a.print_summary_freq == 0:
-                    print('epoch:{0}    step:{1}   loss:{2:.4f}'.format(train_epoch, step, l))
-
-            # after loop
-            saver.save(sess, a.checkpoint_dir + 'model.ckpt', global_step=step)
-            print('-------- checkpoint saved:{} --------'.format(step))
+    save_path = ckpt_manager.save(checkpoint_number=a.num_steps)
+    print('-------- checkpoint saved:{} --------'.format(save_path))
 
 
 if __name__ == "__main__":
